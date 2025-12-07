@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Princess Quest: Legend of the Realms</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', Courier, monospace; user-select: none; }
+        
+        /* UI OVERLAYS */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        
+        #hud { display: none; padding: 20px; color: white; text-shadow: 2px 2px 0 #000; }
+        .bar-container { width: 200px; height: 20px; background: #333; margin-bottom: 10px; border: 2px solid white; }
+        #hp-bar { width: 100%; height: 100%; background: #ff0055; transition: width 0.2s; }
+        #xp-bar { width: 0%; height: 100%; background: #00ccff; transition: width 0.2s; }
+        #stats { font-size: 18px; font-weight: bold; }
+        
+        #message-area { 
+            position: absolute; top: 20%; width: 100%; text-align: center; 
+            color: #fff; font-size: 24px; font-weight: bold; text-shadow: 0 0 10px #fff;
+            opacity: 0; transition: opacity 1s;
+        }
+
+        /* MENUS */
+        .menu-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            pointer-events: auto; color: white; z-index: 10;
+        }
+        
+        h1 { font-size: 60px; color: #ff69b4; text-shadow: 0 0 20px #ff69b4; margin-bottom: 10px; text-align: center;}
+        h2 { font-size: 30px; color: #ddd; margin-bottom: 40px; }
+        
+        button {
+            padding: 15px 40px; font-size: 24px; background: #ff0055; color: white; border: none;
+            cursor: pointer; border-radius: 5px; transition: transform 0.1s, background 0.2s;
+            font-family: inherit; font-weight: bold; text-transform: uppercase;
+            box-shadow: 0 0 15px #ff0055; margin: 10px;
+        }
+        button:hover { transform: scale(1.1); background: #ff3377; }
+        
+        #tutorial { max-width: 600px; text-align: center; line-height: 1.5; margin-bottom: 30px; color: #aaa; }
+
+        .hidden { display: none !important; }
+
+        /* Crosshair */
+        #crosshair {
+            position: absolute; top: 50%; left: 50%; width: 20px; height: 20px;
+            border: 2px solid rgba(255,255,255,0.5); border-radius: 50%;
+            transform: translate(-50%, -50%); pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 3D Canvas Container -->
+    <div id="game-container"></div>
+
+    <!-- UI Layer -->
+    <div id="ui-layer">
+        <div id="hud">
+            <div id="stats">LVL <span id="lvl-val">1</span> | ZONE: <span id="zone-val">FOREST</span></div>
+            <div class="bar-container"><div id="hp-bar"></div></div>
+            <div class="bar-container" style="height: 10px; border: 1px solid #aaa;"><div id="xp-bar"></div></div>
+            <div id="objective">Current Objective: Defeat <span id="zombie-count">0</span>/5 Zombies to open Portal</div>
+        </div>
+        <div id="message-area">LEVEL UP!</div>
+        <div id="crosshair"></div>
+    </div>
+
+    <!-- Main Menu -->
+    <div id="main-menu" class="menu-screen">
+        <h1>PRINCESS QUEST</h1>
+        <h2>The Search for the Prince</h2>
+        <div id="tutorial">
+            Travel through the <b>Forest</b>, the <b>Frozen Tundra</b>, and the <b>Scorched Desert</b>.<br>
+            Defeat Zombies to gain XP and Level Up.<br>
+            You must be strong to face the Dragon in the final realm.<br><br>
+            <b>WASD</b> to Move &bull; <b>SPACE</b> to Shoot Magic
+        </div>
+        <button id="start-btn">Start Adventure</button>
+    </div>
+
+    <!-- Game Over Screen -->
+    <div id="game-over-screen" class="menu-screen hidden">
+        <h1 style="color: red; text-shadow: 0 0 20px red;">GAME OVER</h1>
+        <h2>The realm has fallen...</h2>
+        <button onclick="location.reload()">Try Again</button>
+    </div>
+
+    <!-- Win Screen -->
+    <div id="win-screen" class="menu-screen hidden">
+        <h1 style="color: gold; text-shadow: 0 0 20px gold;">VICTORY!</h1>
+        <h2>You defeated the Dragon and saved the Prince!</h2>
+        <button onclick="location.reload()">Play Again</button>
+    </div>
+
+    <!-- Three.js Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        /**
+         * AUDIO SYSTEM (Synthesizer)
+         * Generates sound effects and music without external files.
+         */
+        class AudioSynth {
+            constructor() {
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                this.masterGain = this.ctx.createGain();
+                this.masterGain.gain.value = 0.3;
+                this.masterGain.connect(this.ctx.destination);
+                this.musicInterval = null;
+            }
+
+            playTone(freq, type, duration, vol = 1) {
+                if (this.ctx.state === 'suspended') this.ctx.resume();
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = type;
+                osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
+                
+                gain.gain.setValueAtTime(vol, this.ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + duration);
+
+                osc.connect(gain);
+                gain.connect(this.masterGain);
+                osc.start();
+                osc.stop(this.ctx.currentTime + duration);
+            }
+
+            shoot() {
+                // Laser pew
+                if (this.ctx.state === 'suspended') return;
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.frequency.setValueAtTime(600, this.ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(100, this.ctx.currentTime + 0.2);
+                gain.gain.setValueAtTime(0.5, this.ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.2);
+                osc.connect(gain);
+                gain.connect(this.masterGain);
+                osc.start();
+                osc.stop(this.ctx.currentTime + 0.2);
+            }
+
+            hit() {
+                // Thud
+                this.playTone(100, 'square', 0.1, 0.5);
+            }
+
+            enemyDie() {
+                // Crumble noise
+                this.playTone(80, 'sawtooth', 0.3, 0.4);
+            }
+
+            levelUp() {
+                // RPG Chime
+                const now = this.ctx.currentTime;
+                [440, 554, 659, 880].forEach((f, i) => {
+                    const osc = this.ctx.createOscillator();
+                    const gain = this.ctx.createGain();
+                    osc.type = 'sine';
+                    osc.frequency.value = f;
+                    gain.gain.setValueAtTime(0, now + i*0.1);
+                    gain.gain.linearRampToValueAtTime(0.5, now + i*0.1 + 0.05);
+                    gain.gain.exponentialRampToValueAtTime(0.01, now + i*0.1 + 0.5);
+                    osc.connect(gain);
+                    gain.connect(this.masterGain);
+                    osc.start(now + i*0.1);
+                    osc.stop(now + i*0.1 + 0.6);
+                });
+            }
+
+            dragonRoar() {
+                // Deep noise
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = 'sawtooth';
+                osc.frequency.setValueAtTime(150, this.ctx.currentTime);
+                osc.frequency.linearRampToValueAtTime(50, this.ctx.currentTime + 1.0);
+                gain.gain.setValueAtTime(1, this.ctx.currentTime);
+                gain.gain.linearRampToValueAtTime(0, this.ctx.currentTime + 1.0);
+                
+                // Add distortion/noise simulation by modulating freq
+                const lfo = this.ctx.createOscillator();
+                lfo.frequency.value = 50;
+                const lfoGain = this.ctx.createGain();
+                lfoGain.gain.value = 500;
+                lfo.connect(lfoGain);
+                lfoGain.connect(osc.frequency);
+                lfo.start();
+
+                osc.connect(gain);
+                gain.connect(this.masterGain);
+                osc.start();
+                osc.stop(this.ctx.currentTime + 1.0);
+                lfo.stop(this.ctx.currentTime + 1.0);
+            }
+
+            startMusic() {
+                // Simple ambient drone
+                if(this.musicInterval) return;
+                const playNote = () => {
+                    const freq = [220, 261, 329, 196][Math.floor(Math.random() * 4)];
+                    this.playTone(freq, 'sine', 2.0, 0.1);
+                };
+                playNote();
+                this.musicInterval = setInterval(playNote, 2000);
+            }
+        }
+
+        /**
+         * GAME ENGINE
+         */
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.getElementById('game-container').appendChild(renderer.domElement);
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(50, 100, 50);
+        dirLight.castShadow = true;
+        dirLight.shadow.camera.left = -50;
+        dirLight.shadow.camera.right = 50;
+        dirLight.shadow.camera.top = 50;
+        dirLight.shadow.camera.bottom = -50;
+        scene.add(dirLight);
+
+        // Audio
+        const audio = new AudioSynth();
+
+        // Game State
+        const state = {
+            active: false,
+            level: 1,
+            xp: 0,
+            xpToNext: 100,
+            hp: 100,
+            maxHp: 100,
+            zone: 1, // 1: Forest, 2: Frozen, 3: Desert, 4: Boss
+            killsInZone: 0,
+            reqKills: 5,
+            projectiles: [],
+            enemies: [],
+            particles: [],
+            lastShot: 0,
+            bossSpawned: false
+        };
+
+        const ZONES = {
+            1: { name: 'FOREST', color: 0x2d5a27, fog: 0x88ccff, treeCol: 0x006400, req: 5 },
+            2: { name: 'FROZEN', color: 0xe0f7fa, fog: 0xcceeff, treeCol: 0x88aabb, req: 8 },
+            3: { name: 'DESERT', color: 0xe6c229, fog: 0xffeebb, treeCol: 0x8b4513, req: 10 },
+            4: { name: 'DRAGON LAIR', color: 0x221111, fog: 0x330000, treeCol: 0x550000, req: 1 }
+        };
+
+        // Inputs
+        const keys = { w: false, a: false, s: false, d: false, space: false };
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'w' || e.key === 'ArrowUp') keys.w = true;
+            if (e.key === 'a' || e.key === 'ArrowLeft') keys.a = true;
+            if (e.key === 's' || e.key === 'ArrowDown') keys.s = true;
+            if (e.key === 'd' || e.key === 'ArrowRight') keys.d = true;
+            if (e.code === 'Space') keys.space = true;
+        });
+        window.addEventListener('keyup', (e) => {
+            if (e.key === 'w' || e.key === 'ArrowUp') keys.w = false;
+            if (e.key === 'a' || e.key === 'ArrowLeft') keys.a = false;
+            if (e.key === 's' || e.key === 'ArrowDown') keys.s = false;
+            if (e.key === 'd' || e.key === 'ArrowRight') keys.d = false;
+            if (e.code === 'Space') keys.space = false;
+        });
+
+        // --- MESH GENERATORS ---
+
+        // Player (The Princess)
+        const playerGroup = new THREE.Group();
+        const bodyGeo = new THREE.CylinderGeometry(0.5, 0.7, 1.8, 12);
+        const bodyMat = new THREE.MeshLambertMaterial({ color: 0xff69b4 }); // Hot Pink
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        body.position.y = 0.9;
+        body.castShadow = true;
+        
+        const headGeo = new THREE.SphereGeometry(0.5, 12, 12);
+        const headMat = new THREE.MeshLambertMaterial({ color: 0xffccaa }); // Skin
+        const head = new THREE.Mesh(headGeo, headMat);
+        head.position.y = 2.1;
+
+        // Hair
+        const hairGeo = new THREE.ConeGeometry(0.6, 1.5, 12);
+        const hairMat = new THREE.MeshLambertMaterial({ color: 0xffff00 }); // Blonde
+        const hair = new THREE.Mesh(hairGeo, hairMat);
+        hair.position.y = 2.2;
+        hair.rotation.x = -0.2;
+
+        playerGroup.add(body, head, hair);
+        scene.add(playerGroup);
+
+        // Ground
+        const groundGeo = new THREE.PlaneGeometry(200, 200);
+        const groundMat = new THREE.MeshLambertMaterial({ color: ZONES[1].color });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        // Portal (The goal)
+        const portalGroup = new THREE.Group();
+        const portalRing = new THREE.Mesh(
+            new THREE.TorusGeometry(3, 0.3, 16, 32),
+            new THREE.MeshBasicMaterial({ color: 0x00ffff })
+        );
+        const portalInner = new THREE.Mesh(
+            new THREE.CircleGeometry(3, 32),
+            new THREE.MeshBasicMaterial({ color: 0x00ffff, transparent: true, opacity: 0.3, side: THREE.DoubleSide })
+        );
+        portalGroup.add(portalRing, portalInner);
+        portalGroup.position.set(0, 3, -40);
+        portalGroup.visible = false;
+        scene.add(portalGroup);
+
+        // Prince (Goal of Zone 4)
+        const princeGroup = new THREE.Group();
+        const pBody = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 1.8), new THREE.MeshLambertMaterial({color: 0x0000ff}));
+        pBody.position.y = 0.9;
+        const pHead = new THREE.Mesh(new THREE.SphereGeometry(0.5), new THREE.MeshLambertMaterial({color: 0xffccaa}));
+        pHead.position.y = 2.1;
+        princeGroup.add(pBody, pHead);
+        princeGroup.position.set(0, 0, -50);
+        princeGroup.visible = false;
+        scene.add(princeGroup);
+
+        // Dragon (Boss)
+        let dragon = null;
+
+        // Environment Objects
+        let scenery = [];
+
+        function generateScenery(zoneId) {
+            // Clear old
+            scenery.forEach(s => scene.remove(s));
+            scenery = [];
+            
+            ground.material.color.setHex(ZONES[zoneId].color);
+            scene.fog = new THREE.Fog(ZONES[zoneId].fog, 10, 60);
+            scene.background = new THREE.Color(ZONES[zoneId].fog);
+
+            const count = 30;
+            for(let i=0; i<count; i++) {
+                const x = (Math.random() - 0.5) * 100;
+                const z = (Math.random() - 0.5) * 100;
+                // Don't spawn near center
+                if(Math.abs(x) < 10 && Math.abs(z) < 10) continue;
+
+                const group = new THREE.Group();
+                group.position.set(x, 0, z);
+
+                if (zoneId === 3) {
+                    // Cactus
+                    const trunk = new THREE.Mesh(
+                        new THREE.CylinderGeometry(0.4, 0.4, 3, 6),
+                        new THREE.MeshLambertMaterial({color: 0x228b22})
+                    );
+                    trunk.position.y = 1.5;
+                    group.add(trunk);
+                    
+                    const arm = new THREE.Mesh(
+                         new THREE.CylinderGeometry(0.3, 0.3, 1, 6),
+                         new THREE.MeshLambertMaterial({color: 0x228b22})
+                    );
+                    arm.position.set(0.5, 2, 0);
+                    arm.rotation.z = Math.PI/2;
+                    group.add(arm);
+                } else if (zoneId === 4) {
+                    // Spikes
+                    const spike = new THREE.Mesh(
+                        new THREE.ConeGeometry(1, 4, 4),
+                        new THREE.MeshLambertMaterial({color: 0x330000})
+                    );
+                    spike.position.y = 2;
+                    group.add(spike);
+                } else {
+                    // Tree
+                    const trunk = new THREE.Mesh(
+                        new THREE.CylinderGeometry(0.4, 0.6, 2, 8),
+                        new THREE.MeshLambertMaterial({color: 0x5c4033})
+                    );
+                    trunk.position.y = 1;
+                    
+                    const leaves = new THREE.Mesh(
+                        new THREE.ConeGeometry(2, 4, 8),
+                        new THREE.MeshLambertMaterial({color: ZONES[zoneId].treeCol})
+                    );
+                    leaves.position.y = 3;
+                    group.add(trunk, leaves);
+                }
+                
+                scene.add(group);
+                scenery.push(group);
+            }
+        }
+
+        // --- CLASSES ---
+
+        class Enemy {
+            constructor(isBoss = false) {
+                this.isBoss = isBoss;
+                this.hp = isBoss ? 500 : 20 + (state.level * 5);
+                this.speed = isBoss ? 0.05 : 0.08 + (state.level * 0.01);
+                this.damage = isBoss ? 30 : 5 + state.level;
+                
+                this.mesh = new THREE.Group();
+                
+                if (isBoss) {
+                    // Dragon Mesh
+                    const body = new THREE.Mesh(new THREE.BoxGeometry(4, 4, 8), new THREE.MeshLambertMaterial({color: 0x880000}));
+                    body.position.y = 3;
+                    const wings = new THREE.Mesh(new THREE.BoxGeometry(12, 1, 4), new THREE.MeshLambertMaterial({color: 0xaa0000}));
+                    wings.position.set(0, 5, 0);
+                    const head = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 3), new THREE.MeshLambertMaterial({color: 0xff0000}));
+                    head.position.set(0, 6, 4);
+                    this.mesh.add(body, wings, head);
+                    audio.dragonRoar();
+                } else {
+                    // Zombie Mesh
+                    const mat = new THREE.MeshLambertMaterial({ color: 0x558844 });
+                    const body = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.8, 0.8), mat);
+                    body.position.y = 0.9;
+                    const arms = new THREE.Mesh(new THREE.BoxGeometry(2, 0.4, 0.4), mat);
+                    arms.position.set(0, 1.4, 0.4);
+                    this.mesh.add(body, arms);
+                }
+
+                // Spawn logic
+                const angle = Math.random() * Math.PI * 2;
+                const dist = isBoss ? 40 : 20 + Math.random() * 20;
+                this.mesh.position.set(
+                    playerGroup.position.x + Math.cos(angle) * dist,
+                    0,
+                    playerGroup.position.z + Math.sin(angle) * dist
+                );
+                
+                scene.add(this.mesh);
+            }
+
+            update() {
+                // Move towards player
+                const dx = playerGroup.position.x - this.mesh.position.x;
+                const dz = playerGroup.position.z - this.mesh.position.z;
+                const dist = Math.sqrt(dx*dx + dz*dz);
+                
+                if (dist > 1.5) {
+                    this.mesh.position.x += (dx / dist) * this.speed;
+                    this.mesh.position.z += (dz / dist) * this.speed;
+                    this.mesh.lookAt(playerGroup.position);
+                } else {
+                    // Attack Player
+                    if (Math.random() < 0.05) {
+                        state.hp -= this.damage;
+                        audio.hit();
+                        updateHUD();
+                        screenShake();
+                        if (state.hp <= 0) gameOver();
+                    }
+                }
+
+                // Boss Shooting
+                if (this.isBoss && Math.random() < 0.02) {
+                    shootProjectile(this.mesh.position, playerGroup.position, true);
+                    audio.shoot();
+                }
+            }
+        }
+
+        class Projectile {
+            constructor(pos, target, isEnemy = false) {
+                this.isEnemy = isEnemy;
+                this.speed = 0.5;
+                const geo = new THREE.SphereGeometry(isEnemy ? 1 : 0.3);
+                const mat = new THREE.MeshBasicMaterial({ color: isEnemy ? 0xff0000 : 0x00ffff });
+                this.mesh = new THREE.Mesh(geo, mat);
+                this.mesh.position.copy(pos);
+                this.mesh.position.y += isEnemy ? 4 : 1; // Height adjustment
+
+                // Calculate direction
+                const dx = target.x - pos.x;
+                const dz = target.z - pos.z;
+                const dist = Math.sqrt(dx*dx + dz*dz);
+                this.vel = { x: (dx/dist)*this.speed, z: (dz/dist)*this.speed };
+                
+                // Add minor spread
+                if (!isEnemy) {
+                    this.vel.x += (Math.random()-0.5)*0.1;
+                    this.vel.z += (Math.random()-0.5)*0.1;
+                }
+
+                scene.add(this.mesh);
+            }
+
+            update() {
+                this.mesh.position.x += this.vel.x;
+                this.mesh.position.z += this.vel.z;
+                
+                // Boundaries
+                if (Math.abs(this.mesh.position.x) > 100 || Math.abs(this.mesh.position.z) > 100) return false;
+
+                // Collisions
+                if (this.isEnemy) {
+                    // Hits Player
+                    const dist = this.mesh.position.distanceTo(playerGroup.position);
+                    if (dist < 1.5) {
+                        state.hp -= 20;
+                        audio.hit();
+                        screenShake();
+                        updateHUD();
+                        if (state.hp <= 0) gameOver();
+                        return false;
+                    }
+                } else {
+                    // Hits Enemy
+                    for (let i = 0; i < state.enemies.length; i++) {
+                        const enemy = state.enemies[i];
+                        const dist = this.mesh.position.distanceTo(enemy.mesh.position);
+                        const hitRadius = enemy.isBoss ? 5 : 1.5;
+                        
+                        if (dist < hitRadius) {
+                            enemy.hp -= (10 + state.level * 2);
+                            createParticles(this.mesh.position, 0x00ffff);
+                            
+                            if (enemy.hp <= 0) {
+                                killEnemy(i);
+                            }
+                            return false; // Destroy projectile
+                        }
+                    }
+                }
+                return true;
+            }
+        }
+
+        // --- GAME LOGIC FUNCTIONS ---
+
+        function initGame() {
+            state.active = true;
+            state.hp = state.maxHp;
+            state.level = 1;
+            state.xp = 0;
+            state.zone = 1;
+            state.killsInZone = 0;
+            state.bossSpawned = false;
+            
+            playerGroup.position.set(0, 0, 0);
+            
+            // Clear enemies
+            state.enemies.forEach(e => scene.remove(e.mesh));
+            state.enemies = [];
+            state.projectiles.forEach(p => scene.remove(p.mesh));
+            state.projectiles = [];
+
+            generateScenery(1);
+            updateHUD();
+            
+            document.getElementById('main-menu').classList.add('hidden');
+            document.getElementById('hud').style.display = 'block';
+            
+            audio.startMusic();
+        }
+
+        function createParticles(pos, color) {
+            for(let i=0; i<8; i++) {
+                const geo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+                const mat = new THREE.MeshBasicMaterial({color: color});
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.position.copy(pos);
+                
+                state.particles.push({
+                    mesh: mesh,
+                    vel: { x: (Math.random()-0.5)*0.3, y: Math.random()*0.3, z: (Math.random()-0.5)*0.3 },
+                    life: 1.0
+                });
+                scene.add(mesh);
+            }
+        }
+
+        function killEnemy(index) {
+            const enemy = state.enemies[index];
+            createParticles(enemy.mesh.position, 0x558844);
+            scene.remove(enemy.mesh);
+            state.enemies.splice(index, 1);
+            
+            audio.enemyDie();
+
+            if (enemy.isBoss) {
+                // WIN GAME
+                state.active = false;
+                princeGroup.visible = true;
+                princeGroup.position.copy(enemy.mesh.position);
+                document.getElementById('win-screen').classList.remove('hidden');
+                document.getElementById('hud').style.display = 'none';
+                return;
+            }
+
+            // XP Logic
+            const xpGain = 20;
+            state.xp += xpGain;
+            if (state.xp >= state.xpToNext) {
+                state.level++;
+                state.xp = 0;
+                state.xpToNext = Math.floor(state.xpToNext * 1.5);
+                state.maxHp += 20;
+                state.hp = state.maxHp;
+                audio.levelUp();
+                
+                const msg = document.getElementById('message-area');
+                msg.style.opacity = 1;
+                setTimeout(() => msg.style.opacity = 0, 2000);
+            }
+
+            // Zone Progression
+            state.killsInZone++;
+            if (state.killsInZone >= ZONES[state.zone].req && state.zone < 4) {
+                portalGroup.visible = true;
+                const msg = document.getElementById('objective');
+                msg.innerText = "PORTAL OPEN! ENTER IT!";
+                msg.style.color = "#00ffff";
+            } else if (state.zone < 4) {
+                updateHUD();
+            }
+        }
+
+        function spawnEnemies() {
+            // No spawning in boss room unless boss is not there yet?
+            if (state.zone === 4) {
+                if (!state.bossSpawned) {
+                    state.enemies.push(new Enemy(true));
+                    state.bossSpawned = true;
+                    // Also spawn minions
+                    for(let i=0; i<5; i++) state.enemies.push(new Enemy());
+                }
+                return;
+            }
+
+            // Regular spawning
+            if (state.enemies.length < 5 + state.level) {
+                if (Math.random() < 0.02) {
+                    state.enemies.push(new Enemy());
+                }
+            }
+        }
+
+        function shootProjectile(origin, target, isEnemy) {
+            state.projectiles.push(new Projectile(origin, target, isEnemy));
+        }
+
+        function enterPortal() {
+            if (state.zone < 4) {
+                state.zone++;
+                state.killsInZone = 0;
+                playerGroup.position.set(0, 0, 0);
+                portalGroup.visible = false;
+                generateScenery(state.zone);
+                
+                // Clear existing enemies
+                state.enemies.forEach(e => scene.remove(e.mesh));
+                state.enemies = [];
+                state.projectiles.forEach(p => scene.remove(p.mesh));
+                state.projectiles = [];
+                
+                audio.playTone(600, 'sine', 1.0); // Warp sound
+                updateHUD();
+            }
+        }
+
+        function updateHUD() {
+            document.getElementById('lvl-val').innerText = state.level;
+            document.getElementById('zone-val').innerText = ZONES[state.zone].name;
+            document.getElementById('hp-bar').style.width = (state.hp / state.maxHp * 100) + '%';
+            document.getElementById('xp-bar').style.width = (state.xp / state.xpToNext * 100) + '%';
+            
+            if (state.zone < 4) {
+                const req = ZONES[state.zone].req;
+                if (state.killsInZone < req) {
+                     document.getElementById('objective').innerText = `Current Objective: Defeat ${state.killsInZone}/${req} Zombies`;
+                     document.getElementById('objective').style.color = "white";
+                }
+            } else {
+                document.getElementById('objective').innerText = "OBJECTIVE: DEFEAT THE DRAGON";
+                document.getElementById('objective').style.color = "red";
+            }
+        }
+
+        function screenShake() {
+            camera.position.x += (Math.random()-0.5);
+            camera.position.y += (Math.random()-0.5);
+            setTimeout(() => {
+                camera.position.y = 20; // reset roughly
+            }, 50);
+        }
+
+        function gameOver() {
+            state.active = false;
+            document.getElementById('game-over-screen').classList.remove('hidden');
+            document.getElementById('hud').style.display = 'none';
+        }
+
+        // --- MAIN LOOP ---
+
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (!state.active) {
+                renderer.render(scene, camera);
+                return;
+            }
+
+            const delta = clock.getDelta();
+
+            // Player Movement
+            const moveSpeed = 0.2;
+            if (keys.w) playerGroup.position.z -= moveSpeed;
+            if (keys.s) playerGroup.position.z += moveSpeed;
+            if (keys.a) playerGroup.position.x -= moveSpeed;
+            if (keys.d) playerGroup.position.x += moveSpeed;
+
+            // Camera Follow
+            camera.position.set(playerGroup.position.x, 20, playerGroup.position.z + 20);
+            camera.lookAt(playerGroup.position);
+
+            // Shooting
+            if (keys.space && Date.now() - state.lastShot > 400) {
+                // Simple directional shooting based on last movement or forward
+                let target = new THREE.Vector3(playerGroup.position.x, 0, playerGroup.position.z - 10);
+                
+                // If moving, shoot in that direction
+                if (keys.w || keys.a || keys.s || keys.d) {
+                    target.set(playerGroup.position.x, 0, playerGroup.position.z);
+                    if(keys.w) target.z -= 10;
+                    if(keys.s) target.z += 10;
+                    if(keys.a) target.x -= 10;
+                    if(keys.d) target.x += 10;
+                }
+                
+                shootProjectile(playerGroup.position, target, false);
+                audio.shoot();
+                state.lastShot = Date.now();
+            }
+
+            // Portal Interaction
+            if (portalGroup.visible && playerGroup.position.distanceTo(portalGroup.position) < 3) {
+                enterPortal();
+            }
+
+            // Enemies
+            spawnEnemies();
+            state.enemies.forEach(e => e.update());
+
+            // Projectiles
+            for (let i = state.projectiles.length - 1; i >= 0; i--) {
+                const alive = state.projectiles[i].update();
+                if (!alive) {
+                    scene.remove(state.projectiles[i].mesh);
+                    state.projectiles.splice(i, 1);
+                }
+            }
+
+            // Particles
+            for (let i = state.particles.length - 1; i >= 0; i--) {
+                const p = state.particles[i];
+                p.mesh.position.x += p.vel.x;
+                p.mesh.position.y += p.vel.y;
+                p.mesh.position.z += p.vel.z;
+                p.vel.y -= 0.02; // gravity
+                p.life -= 0.05;
+                if (p.life <= 0 || p.mesh.position.y < 0) {
+                    scene.remove(p.mesh);
+                    state.particles.splice(i, 1);
+                }
+            }
+
+            // Portal Animation
+            if (portalGroup.visible) {
+                portalGroup.rotation.y += 0.05;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        document.getElementById('start-btn').addEventListener('click', () => {
+            initGame();
+        });
+
+        // Initialize empty scenery
+        generateScenery(1);
+        animate();
+
+        // Handle resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+    </script>
+</body>
+</html>
