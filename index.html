@@ -243,6 +243,7 @@
             xp: 0,
             xpToNext: 100,
             hp: 100,
+            lastRegen:0,
             maxHp: 100,
             zone: 1, // 1: Forest, 2: Frozen, 3: Desert, 4: Boss
             killsInZone: 0,
@@ -752,8 +753,15 @@
                 shootProjectile(playerGroup.position, target, false);
                 audio.shoot();
                 state.lastShot = Date.now();
-            }
-
+            } // (closing brace of the shooting code)
+            // --- REGENERATION CODE ---
+            if (state.hp>0 && state.hp < state.maxhp) { const now = Date.now();
+                                                       if(now - state.lastRegen > 1000) {
+                                                           state.hp += 2;
+                                                           if (state.hp > state.maxhp) state.Hp = state.maxHP;
+                                                           updateHUD();
+                                                           state.lastRegen = now;}
+                                                      }
             // Portal Interaction
             if (portalGroup.visible && playerGroup.position.distanceTo(portalGroup.position) < 6) {
                 enterPortal();
